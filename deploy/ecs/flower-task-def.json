@@ -1,0 +1,49 @@
+{
+  "family": "rawbin-backend-flower",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::123456789012:role/rawbin-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "flower",
+      "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/rawbin-backend-worker:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 5555,
+          "hostPort": 5555,
+          "protocol": "tcp"
+        }
+      ],
+      "command": [
+        "celery",
+        "-A",
+        "app.workers.celery_app",
+        "flower",
+        "--port=5555",
+        "--basic_auth=admin:admin123"
+      ],
+      "environment": [
+        { "name": "APP_ENV", "value": "production" },
+        { "name": "DEBUG", "value": "false" }
+      ],
+      "secrets": [
+        { "name": "REDIS_PASSWORD", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/REDIS_PASSWORD" },
+        { "name": "REDIS_HOST", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/REDIS_HOST" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/rawbin-backend-flower",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
