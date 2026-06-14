@@ -48,6 +48,15 @@ async def main():
         device_id = device["device_id"]
         print(f"   -> Device created: {device_id}")
         
+        # 2.5 Force Pair the device in the database so telemetry API doesn't reject it
+        print("2.5 Force pairing device in DB...")
+        from sqlalchemy import update
+        from app.db.session import AsyncSessionLocal
+        from app.db.models.device import Device
+        async with AsyncSessionLocal() as db:
+            await db.execute(update(Device).where(Device.id == device_id).values(is_paired=True))
+            await db.commit()
+        
         # Write device_id to a file for the C++ script
         with open("last_device_id.txt", "w") as f:
             f.write(device_id)
@@ -63,7 +72,7 @@ async def main():
         })
         
         mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        mqtt_client.connect("localhost", 1883, 60)
+        mqtt_client.connect("mosquitto", 1883, 60)
         mqtt_client.publish(topic, payload)
         mqtt_client.disconnect()
         print(f"   -> Published to {topic}")
