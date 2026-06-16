@@ -9,6 +9,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+_E164_PATTERN = r"^\+[1-9]\d{1,14}$"
+
 
 class UserOut(BaseModel):
     """Public user profile — never expose password_hash or internal flags."""
@@ -16,6 +18,7 @@ class UserOut(BaseModel):
 
     id: uuid.UUID
     email: EmailStr
+    phone: str | None = None
     display_name: str
     is_active: bool
     has_push_token: bool = Field(
@@ -28,6 +31,7 @@ class UserOut(BaseModel):
         return cls(
             id=user.id,
             email=user.email,
+            phone=user.phone,
             display_name=user.display_name,
             is_active=user.is_active,
             has_push_token=bool(user.firebase_push_token),
@@ -42,6 +46,11 @@ class UserPatchIn(BaseModel):
         min_length=1,
         max_length=100,
         description="New display name (1–100 characters).",
+    )
+    phone: str | None = Field(
+        default=None,
+        pattern=_E164_PATTERN,
+        description="E.164 phone number used for SMS-OTP login.",
     )
 
 

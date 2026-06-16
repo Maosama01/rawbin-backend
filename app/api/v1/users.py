@@ -11,8 +11,10 @@ User profile management routes.
 import logging
 
 from fastapi import APIRouter, HTTPException, status
+from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
+from app.db.models.user import User
 from app.schemas.user import PushTokenIn, UserOut, UserPatchIn
 
 logger = logging.getLogger(__name__)
@@ -43,11 +45,26 @@ async def patch_me(
     """
     Partial update of the user's own profile.
 
-    Currently supports: `display_name`.
+    Supports: `display_name`, `phone` (used for SMS-OTP login).
     Email changes require a verification flow and are handled separately.
     """
     if body.display_name is not None:
         current_user.display_name = body.display_name
+
+    if body.phone is not None and body.phone != current_user.phone:
+        clash = (
+            await db.execute(
+                select(User.id).where(
+                    User.phone == body.phone, User.id != current_user.id
+                )
+            )
+        ).scalar_one_or_none()
+        if clash is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="That phone number is already in use.",
+            )
+        current_user.phone = body.phone
 
     db.add(current_user)
     await db.flush()

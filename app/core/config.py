@@ -85,6 +85,20 @@ class Settings(BaseSettings):
     def CELERY_RESULT_BACKEND(self) -> str:
         return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/2"
 
+    # ── OTP (SMS-based passwordless login) ───────────────────────────────────
+    OTP_LENGTH: int = 6
+    OTP_TTL_SECONDS: int = 300          # Code validity window (5 min)
+    OTP_MAX_ATTEMPTS: int = 5           # Wrong-code attempts before lockout
+    OTP_RESEND_COOLDOWN_SECONDS: int = 60  # Min gap between code requests
+
+    # ── SMS provider (Twilio) ────────────────────────────────────────────────
+    # When all three are set, the Twilio REST API is used; otherwise the SMS
+    # sender falls back to a logging stub so local dev works with no account.
+    SMS_PROVIDER: Literal["twilio", "stub"] = "stub"
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_FROM_NUMBER: str = ""
+
     # ── Device Pairing ───────────────────────────────────────────────────────
     PAIRING_CHALLENGE_TTL_SECONDS: int = 120
     # A URL-safe base64-encoded 32-byte key used to Fernet-encrypt device secrets.

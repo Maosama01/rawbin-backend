@@ -16,7 +16,7 @@ Design notes
 
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, String, Text
+from sqlalchemy import Boolean, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,15 +46,7 @@ class Device(Base, TimestampMixin):
         nullable=False,
     )
 
-    # FK → users.id — the user who completed device pairing
-    owner_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # Human-readable name editable by the owner in the app
+    # Human-readable name editable by any member in the app
     display_name: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
@@ -75,14 +67,23 @@ class Device(Base, TimestampMixin):
     )
 
     # ── Relationships ─────────────────────────────────────────────────────────
-    owner: Mapped["User"] = relationship(  # noqa: F821
+    # Association rows linking users (members) to this device.
+    user_links: Mapped[list["UserDevice"]] = relationship(  # noqa: F821
+        "UserDevice",
+        back_populates="device",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    # Convenience read-only view of the member User objects.
+    members: Mapped[list["User"]] = relationship(  # noqa: F821
         "User",
-        back_populates="devices",
+        secondary="user_devices",
+        viewonly=True,
         lazy="select",
     )
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<Device id={self.id} hardware_uid={self.hardware_uid!r} "
-            f"owner_id={self.owner_id} paired={self.is_paired}>"
+            f"paired={self.is_paired}>"
         )

@@ -26,11 +26,14 @@ from app.main import app
 
 settings = get_settings()
 
-# Tables to clean between tests (order respects FK constraints)
+# Tables to clean between tests (TRUNCATE ... CASCADE handles FK order)
 _TRUNCATE_TABLES = [
+    "waste_logs",
+    "compost_cycles",
     "alert_events",
     "device_configs",
     "sensor_readings",
+    "user_devices",
     "refresh_tokens",
     "devices",
     "users",

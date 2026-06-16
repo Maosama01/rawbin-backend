@@ -20,9 +20,9 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
-from app.db.models.device import Device
 from app.db.models.sensor_reading import SensorReading
 from app.schemas.telemetry import DeviceSnapshotResponse, SensorReadingOut
+from app.services import device_access
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +51,8 @@ async def device_snapshot(
 
     On a hypertable this is O(1) against the latest chunk — no full scan.
     """
-    # Verify device exists and belongs to the current user
-    dev_result = await db.execute(
-        select(Device).where(Device.id == device_id)
-    )
-    device: Device | None = dev_result.scalar_one_or_none()
-
-    if device is None or device.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found.")
+    # Verify the caller is a member of the device.
+    device = await device_access.assert_device_member(db, device_id, current_user.id)
 
     # Fetch latest reading
     reading_result = await db.execute(

@@ -1,42 +1,44 @@
 # ── Web Framework ─────────────────────────────────────────────────────────────
-fastapi==0.111.1
-uvicorn[standard]==0.30.1
+fastapi==0.136.3
+uvicorn[standard]==0.49.0
 
 # ── Database ──────────────────────────────────────────────────────────────────
-sqlalchemy[asyncio]==2.0.30
-asyncpg==0.29.0
-alembic==1.13.1
-psycopg2-binary==2.9.9   # Alembic env.py uses sync driver for migrations
+sqlalchemy[asyncio]==2.0.50
+asyncpg==0.31.0
+alembic==1.18.4
+psycopg2-binary==2.9.12   # Alembic env.py uses sync driver for migrations
 
 # ── Validation ────────────────────────────────────────────────────────────────
-pydantic==2.7.4
-pydantic-settings==2.3.3
+pydantic==2.13.4
+pydantic-settings==2.14.1
+email-validator==2.3.0   # required by Pydantic EmailStr (used in auth/user schemas)
 
 # ── Auth & Security ───────────────────────────────────────────────────────────
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
-bcrypt==4.1.3
+bcrypt==5.0.0
 
 # ── Cache / Messaging ─────────────────────────────────────────────────────────
-redis[hiredis]==5.0.6
+redis[hiredis]==8.0.0
 
 # ── Celery ────────────────────────────────────────────────────────────────────
-celery[redis]==5.4.0
+celery[redis]==5.3.1
 flower==2.0.1
 
 # ── HTTP / Utilities ──────────────────────────────────────────────────────────
-httpx==0.27.0
-python-multipart==0.0.9
+httpx==0.28.1
+python-multipart==0.0.32
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-structlog==24.2.0
+structlog==26.1.0
 
 # ── Push Notifications ────────────────────────────────────────────────────────
-firebase-admin==6.5.0
+firebase-admin==7.4.0
 
 # ── Dev / Test (separate file in practice; kept here for scaffolding ease) ────
-pytest==8.2.2
-pytest-asyncio==0.23.7
-httpx==0.27.0
-boto3==1.34.140
+pytest==9.1.0
+pytest-asyncio==1.4.0
+pytest-env==1.6.0        # pytest.ini uses the `env =` ini block
+httpx==0.28.1
+boto3==1.43.29
 paho-mqtt==2.1.0

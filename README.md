@@ -1,82 +1,104 @@
-# Rawbin Companion API
+# rwb-iot-backend
 
-Backend for the Rawbin STM32-enabled smart home composter. The companion API acts as a BLE-to-HTTPS gateway, processes telemetry data, stores it securely, and runs background alert checks.
+Backend for **Rawbin**, a BLE-enabled smart home composter. The physical bin
+(STM32 + sensors) talks over Bluetooth to the mobile app, which acts as a
+BLE→MQTT/HTTPS gateway to this backend.
 
-## Architecture Stack
-
-- **FastAPI**: Core REST API handling authentication, device management, and telemetry ingestion.
-- **TimescaleDB (PostgreSQL)**: Time-series database for efficient storage and querying of sensor readings.
-- **Mosquitto**: MQTT Broker for real-time telemetry ingestion from STM32 devices via Wi-Fi.
-- **Redis & Celery**: Background task queue for processing alerts (e.g., high temperature, fire hazard).
-- **Flower**: Dashboard for monitoring background Celery tasks.
-- **Docker Compose**: Containerized environment for local development and deployment.
-
-## Features
-
-- **JWT Authentication**: Secure user registration and login using OAuth2/JWT Bearer tokens.
-- **Device Pairing**: Challenge-response based secure pairing mechanism for STM32 hardware.
-- **Time-Series Telemetry**: Store and aggregate telemetry data (Temperature, Humidity, CO2, pH, Fan Speed, Fill Level, Weight).
-- **MQTT Ingestion**: Background listener connecting to Mosquitto to process raw JSON telemetry payloads.
-- **Alert System**: Background tasks trigger alerts based on critical threshold conditions.
-
-## Getting Started
-
-### Prerequisites
-- Docker and Docker Compose
-- Make sure ports `8000`, `5432`, `6379`, `5555`, and `1883` are available.
-
-### Installation
-
-1. Clone the repository
-2. Copy `.env.example` to `.env` and fill in your secrets (or leave defaults for local dev):
-   ```bash
-   cp .env.example .env
-   ```
-3. Start the entire backend stack using Docker Compose:
-   ```bash
-   docker compose up -d
-   ```
-
-### Accessing the Interfaces
-
-- **API Documentation (Swagger UI)**: http://localhost:8000/docs
-- **Flower Task Monitor**: http://localhost:5555
-- **MQTT Broker**: tcp://localhost:1883
-
-## Database Migrations
-
-The project uses Alembic for schema migrations. To run migrations or create a new one, use the provided Docker exec command:
-
-```bash
-# Upgrade to latest migration
-docker exec rawbin_api alembic upgrade head
-
-# Generate a new migration after modifying models
-docker exec rawbin_api alembic revision --autogenerate -m "Add new column"
+```
+STM32 device --BLE--> phone (gateway) --MQTT publish--> broker
+                                                          │
+                                          mqtt_listener (subscriber)
+                                                          │
+                                                   TimescaleDB
+                                                          ▲
+                          mobile app --HTTPS (REST)-------┘  (reads history, manages account/devices)
 ```
 
-## Hardware Integration (STM32)
+## Processes
 
-Rawbin is equipped with STM32 microcontrollers. Telemetry data can be sent via:
+The system runs as **separate processes**, each with one responsibility:
 
-1. **REST API**: For gateways or mobile apps receiving data over BLE, `POST /api/v1/telemetry/{device_id}`.
-2. **MQTT**: For STM32 boards with Wi-Fi capabilities, publish JSON payloads to `rawbin/telemetry/{device_id}` on the local Mosquitto broker.
+| Process | Command | Role |
+|---|---|---|
+| API | `uvicorn app.main:app` | REST API for the mobile app (auth, devices, history, cycles, waste logs) |
+| MQTT worker | `python -m app.workers.mqtt_listener` | **Sole** telemetry ingestion: subscribes to the broker and writes sensor readings to the hypertable |
+| Celery worker | `celery -A app.workers.celery_app worker` | Post-ingestion jobs: alert evaluation + push notifications |
+| Flower | `celery -A app.workers.celery_app flower` | Celery monitoring UI |
 
-### Example MQTT Payload
-```json
-{
-  "temperature_c": 55.5,
-  "humidity_pct": 60.2,
-  "co2_ppm": 1200,
-  "ph_level": 6.8,
-  "fill_level_pct": 45,
-  "weight_kg": 2.3
-}
+> **Ingestion is MQTT-only.** There is no HTTP telemetry-ingest endpoint — that
+> avoids a second, divergent write path. The MQTT worker is decoupled from the
+> API so scaling/restarting the API never duplicates or interrupts ingestion.
+>
+> ⚠️ **Run exactly one MQTT worker replica.** Multiple subscribers on
+> `rawbin/telemetry/+` would each insert every reading. On ECS, set the
+> service desired count to 1 with `minimumHealthyPercent: 0` so deploys never
+> run two at once.
+
+## Tech stack
+
+FastAPI · SQLAlchemy 2 (async, asyncpg) · PostgreSQL + TimescaleDB ·
+Redis · Celery · paho-mqtt · Pydantic v2 · Alembic · python-jose (JWT) ·
+passlib/bcrypt · Fernet (device secrets) · Firebase Admin (push) · Twilio (SMS).
+
+## Data model
+
+- **users** — accounts; `phone` (unique) enables SMS-OTP login.
+- **user_devices** — equal-access sharing join table (`UNIQUE(user_id, device_id)`);
+  every linked user has full access.
+- **devices** — composters; HMAC pairing via Fernet-encrypted secret.
+- **sensor_readings** — TimescaleDB hypertable, PK `(time, device_id)`,
+  **7-day chunks** (tuned for the ~10-minute reading cadence). Continuous
+  aggregate `sensor_readings_hourly` powers hour/day history tiers.
+- **compost_cycles** — lean batch lifecycle (`active → curing → completed`);
+  one active cycle per device (partial unique index). Derived metrics are
+  computed on demand, never stored.
+- **waste_logs** — typed material entries (`greens|browns|food|other`) with
+  optional weight and nullable `compost_cycle_id`; `device_id` is denormalized
+  for fast monthly summaries.
+- **alert_events**, **device_configs**, **refresh_tokens**.
+
+## Authentication
+
+- **Human users:** JWT access token (15 min) + rotating, hashed refresh token
+  (30 days). Two login methods:
+  - `POST /auth/login` — email + password.
+  - `POST /auth/otp/request` → `POST /auth/otp/verify` — SMS one-time code
+    (hashed in Redis, TTL + attempt-limited; SMS via Twilio or a logging stub).
+- **Devices:** pair via HMAC challenge/response (`/devices/pair/...`); telemetry
+  is authenticated at the MQTT broker, not via a device JWT.
+
+## Layout
+
+```
+app/
+  main.py            FastAPI app factory + lifespan (DB/Redis warmup)
+  api/v1/            HTTP routes (auth, devices, telemetry, status, alerts,
+                     users, ota, cycles, waste)
+  core/              config, logging, security, mqtt client
+  db/                engine/session + ORM models
+  schemas/           Pydantic request/response models
+  services/          business logic: otp, sms, auth_service, device_access
+  workers/           celery_app, tasks/, db.py (sync engine), mqtt_listener.py
 ```
 
-## Running Tests
+## Local development
 
-You can run the simulated end-to-end Python script to test MQTT and REST logic:
 ```bash
-docker exec rawbin_api python test_mqtt_flow.py
+cp .env.example .env       # fill SECRET_KEY etc.
+docker compose up --build  # db, redis, mosquitto, api, mqtt_worker, worker, flower
+docker compose exec api alembic upgrade head
+```
+
+- API docs (DEBUG only): http://localhost:8000/docs
+- Flower: http://localhost:5555
+
+SMS defaults to `SMS_PROVIDER=stub` — OTP codes are printed to the
+`mqtt_worker`/`api` logs so you can log in without a Twilio account.
+
+## Tests
+
+Integration tests run against the live Docker stack (Postgres + Redis):
+
+```bash
+docker compose exec api pytest
 ```

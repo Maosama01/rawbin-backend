@@ -1,0 +1,47 @@
+{
+  "family": "rawbin-backend-mqtt-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::123456789012:role/rawbin-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "mqtt-worker",
+      "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/rawbin-backend-worker:latest",
+      "essential": true,
+      "command": [
+        "python",
+        "-m",
+        "app.workers.mqtt_listener"
+      ],
+      "environment": [
+        { "name": "APP_ENV", "value": "production" },
+        { "name": "DEBUG", "value": "false" }
+      ],
+      "secrets": [
+        { "name": "SECRET_KEY", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/SECRET_KEY" },
+        { "name": "DEVICE_SECRET_KEY", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/DEVICE_SECRET_KEY" },
+        { "name": "POSTGRES_USER", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/POSTGRES_USER" },
+        { "name": "POSTGRES_PASSWORD", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/POSTGRES_PASSWORD" },
+        { "name": "POSTGRES_DB", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/POSTGRES_DB" },
+        { "name": "POSTGRES_HOST", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/POSTGRES_HOST" },
+        { "name": "REDIS_PASSWORD", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/REDIS_PASSWORD" },
+        { "name": "REDIS_HOST", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/REDIS_HOST" },
+        { "name": "MQTT_BROKER_HOST", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/MQTT_BROKER_HOST" },
+        { "name": "MQTT_BROKER_PORT", "valueFrom": "arn:aws:ssm:us-east-1:123456789012:parameter/rawbin/prod/MQTT_BROKER_PORT" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/rawbin-backend-mqtt-worker",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

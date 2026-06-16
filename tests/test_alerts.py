@@ -153,11 +153,11 @@ async def test_list_alerts_invalid_severity(
 
 
 @pytest.mark.asyncio
-async def test_list_alerts_wrong_owner(
+async def test_list_alerts_non_member(
     async_client: AsyncClient,
     paired_device: dict,
 ):
-    """A different user should not see another user's alerts."""
+    """A non-member should not see another user's alerts (uniform 404)."""
     device_id = paired_device["device_id"]
 
     # Register a second user
@@ -172,4 +172,4 @@ async def test_list_alerts_wrong_owner(
         f"/api/v1/devices/{device_id}/alerts",
         headers=other_headers,
     )
-    assert r.status_code == 403
+    assert r.status_code == 404

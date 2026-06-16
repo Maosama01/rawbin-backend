@@ -22,7 +22,17 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 
-from app.api.v1 import alerts, auth, devices, status, telemetry, users, ota
+from app.api.v1 import (
+    alerts,
+    auth,
+    cycles,
+    devices,
+    ota,
+    status,
+    telemetry,
+    users,
+    waste,
+)
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -45,9 +55,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     Shutdown:
       - Gracefully close all open connections
+
+    NOTE: MQTT ingestion is intentionally NOT started here. It runs as a
+    separate process (app/workers/mqtt_listener.py) so a single subscriber
+    owns the broker connection regardless of how many API replicas run.
     """
     from app.db.session import engine
-    from app.core.mqtt import mqtt_client
 
     logger.info("Starting Rawbin API — validating database connectivity…")
     async with engine.connect() as conn:
@@ -60,14 +73,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     await redis.ping()
     logger.info("Redis connection OK.")
-    
-    # Start MQTT Client
-    mqtt_client.start()
 
     yield  # ── application runs here ──────────────────────────────────────
 
     logger.info("Shutting down — closing connections…")
-    mqtt_client.stop()
     await engine.dispose()
     await redis.aclose()
     logger.info("Shutdown complete.")
@@ -110,6 +119,8 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix=API_PREFIX)
     app.include_router(alerts.router, prefix=API_PREFIX)
     app.include_router(ota.router, prefix=API_PREFIX)
+    app.include_router(cycles.router, prefix=API_PREFIX)
+    app.include_router(waste.router, prefix=API_PREFIX)
 
     # ── Health check (ECS / ALB target group health probe) ───────────────────
     @app.get("/health", tags=["Infra"], include_in_schema=False)

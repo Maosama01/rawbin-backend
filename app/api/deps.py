@@ -51,6 +51,7 @@ async def get_redis() -> aioredis.Redis:
 # ── Database session re-export ────────────────────────────────────────────────
 # Aliased here so route files only need to import from app.api.deps
 DbSession = Annotated[AsyncSession, Depends(get_db)]
+RedisDep = Annotated[aioredis.Redis, Depends(get_redis)]
 
 
 # ── Current authenticated user ────────────────────────────────────────────────

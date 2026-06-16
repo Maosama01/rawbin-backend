@@ -2,39 +2,31 @@
 app/api/v1/auth.py
 ───────────────────
 Authentication routes:
-  POST /api/v1/auth/register   – create new user account
-  POST /api/v1/auth/login      – issue access + refresh tokens
-  POST /api/v1/auth/refresh    – rotate refresh token, issue new access token
-  POST /api/v1/auth/logout     – revoke the supplied refresh token
-  POST /api/v1/auth/device     – device authenticates with hardware_uid + secret
+  POST /api/v1/auth/register      – create new user account
+  POST /api/v1/auth/login         – password login → access + refresh tokens
+  POST /api/v1/auth/otp/request   – send an SMS one-time code to a phone
+  POST /api/v1/auth/otp/verify    – exchange an SMS code for tokens
+  POST /api/v1/auth/refresh       – rotate refresh token, issue new access token
+  POST /api/v1/auth/logout        – revoke the supplied refresh token
 
-The actual business logic lives in app/services/auth_service.py (to be
-implemented). Routes are intentionally thin: validate input → delegate →
-return response.
+Token issuance and refresh-token persistence live in
+app/services/auth_service.py; OTP/SMS logic in app/services/{otp,sms}.py.
+Routes stay thin: validate input → delegate → return response.
 """
 
-import hashlib
 import logging
-import uuid
-from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
-from app.api.deps import DbSession
+from app.api.deps import DbSession, RedisDep
 from app.core.config import get_settings
-from app.core.security import (
-    create_access_token,
-    create_refresh_token,
-    decrypt_device_secret,
-    hash_password,
-    verify_password,
-)
-from app.db.models.device import Device
+from app.core.security import hash_password, verify_password
 from app.db.models.refresh_token import RefreshToken
 from app.db.models.user import User
 from app.schemas.auth import (
-    DeviceAuthRequest,
+    OTPRequestIn,
+    OTPVerifyIn,
     RefreshRequest,
     RegisterResponse,
     TokenResponse,
@@ -42,30 +34,14 @@ from app.schemas.auth import (
     UserRegisterRequest,
     UserResponse,
 )
+from app.services import auth_service
+from app.services.otp import OTPCooldownError, issue_code, verify_code
+from app.services.sms import SMSDeliveryError, send_sms
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _hash_token(token: str) -> str:
-    """SHA-256 hex digest of an opaque token string for DB storage."""
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
-async def _store_refresh_token(db: DbSession, user_id: uuid.UUID, raw_token: str) -> None:
-    """Persist a hashed refresh token record."""
-    rt = RefreshToken(
-        user_id=user_id,
-        token_hash=_hash_token(raw_token),
-        expires_at=datetime.now(timezone.utc)
-        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-    )
-    db.add(rt)
-    await db.flush()  # Ensure the row is visible to subsequent SELECTs in the same tx
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -77,39 +53,33 @@ async def _store_refresh_token(db: DbSession, user_id: uuid.UUID, raw_token: str
     summary="Register a new user account",
 )
 async def register(body: UserRegisterRequest, db: DbSession) -> RegisterResponse:
-    """
-    Create a new user, hash their password, and return tokens so they are
-    immediately authenticated after sign-up.
-    """
-    # Idempotency: reject duplicate emails
-    existing = await db.execute(select(User).where(User.email == body.email))
-    if existing.scalar_one_or_none():
+    """Create a new user and return tokens so they are authenticated immediately."""
+    # Reject duplicate email or phone.
+    clauses = [User.email == body.email]
+    if body.phone:
+        clauses.append(User.phone == body.phone)
+    existing = await db.execute(select(User).where(or_(*clauses)))
+    if existing.scalars().first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="An account with this email address already exists.",
+            detail="An account with this email or phone already exists.",
         )
 
     user = User(
         email=body.email,
+        phone=body.phone,
         password_hash=hash_password(body.password),
         display_name=body.display_name,
     )
     db.add(user)
     await db.flush()  # populate user.id without committing
 
-    access_token = create_access_token(str(user.id))
-    refresh_token = create_refresh_token(str(user.id))
-    await _store_refresh_token(db, user.id, refresh_token)
-
+    tokens = await auth_service.issue_token_pair(db, user.id)
     logger.info("New user registered", extra={"user_id": str(user.id)})
 
     return RegisterResponse(
         user=UserResponse.model_validate(user),
-        tokens=TokenResponse(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        ),
+        tokens=tokens,
     )
 
 
@@ -123,30 +93,80 @@ async def login(body: UserLoginRequest, db: DbSession) -> TokenResponse:
     result = await db.execute(select(User).where(User.email == body.email))
     user: User | None = result.scalar_one_or_none()
 
-    # Constant-time rejection regardless of whether user exists
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
-
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account has been disabled.",
         )
 
-    access_token = create_access_token(str(user.id))
-    refresh_token = create_refresh_token(str(user.id))
-    await _store_refresh_token(db, user.id, refresh_token)
+    tokens = await auth_service.issue_token_pair(db, user.id)
+    logger.info("User logged in (password)", extra={"user_id": str(user.id)})
+    return tokens
 
-    logger.info("User logged in", extra={"user_id": str(user.id)})
 
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )
+@router.post(
+    "/otp/request",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Send an SMS login code to a registered phone number",
+)
+async def request_otp(body: OTPRequestIn, db: DbSession, redis: RedisDep) -> dict:
+    """
+    Generate and SMS a one-time login code.
+
+    To avoid leaking which phone numbers are registered, this endpoint returns
+    202 regardless of whether the number exists. A real code is only sent when
+    an active account matches the number.
+    """
+    result = await db.execute(select(User).where(User.phone == body.phone))
+    user: User | None = result.scalar_one_or_none()
+
+    if user is not None and user.is_active:
+        try:
+            code = await issue_code(redis, body.phone)
+        except OTPCooldownError:
+            # Silently accept — don't reveal timing of prior requests.
+            return {"detail": "If the number is registered, a code has been sent."}
+        try:
+            await send_sms(body.phone, f"Your Rawbin login code is {code}. It expires in 5 minutes.")
+        except SMSDeliveryError:
+            logger.error("Failed to deliver OTP SMS", extra={"phone": body.phone})
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not send the SMS code. Please try again.",
+            )
+
+    return {"detail": "If the number is registered, a code has been sent."}
+
+
+@router.post(
+    "/otp/verify",
+    response_model=TokenResponse,
+    summary="Exchange an SMS code for access + refresh tokens",
+)
+async def verify_otp(body: OTPVerifyIn, db: DbSession, redis: RedisDep) -> TokenResponse:
+    """Verify the SMS code and, on success, issue a token pair."""
+    if not await verify_code(redis, body.phone, body.code):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired code.",
+        )
+
+    result = await db.execute(select(User).where(User.phone == body.phone))
+    user: User | None = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired code.",
+        )
+
+    tokens = await auth_service.issue_token_pair(db, user.id)
+    logger.info("User logged in (otp)", extra={"user_id": str(user.id)})
+    return tokens
 
 
 @router.post(
@@ -155,11 +175,8 @@ async def login(body: UserLoginRequest, db: DbSession) -> TokenResponse:
     summary="Rotate refresh token and issue new access token",
 )
 async def refresh(body: RefreshRequest, db: DbSession) -> TokenResponse:
-    """
-    Validate the supplied refresh token, rotate it (revoke old, issue new),
-    and return a fresh access token.
-    """
-    token_hash = _hash_token(body.refresh_token)
+    """Validate the refresh token, rotate it, and return a fresh pair."""
+    token_hash = auth_service.hash_token(body.refresh_token)
     result = await db.execute(
         select(RefreshToken).where(RefreshToken.token_hash == token_hash)
     )
@@ -171,19 +188,8 @@ async def refresh(body: RefreshRequest, db: DbSession) -> TokenResponse:
             detail="Refresh token is invalid or has expired.",
         )
 
-    # Rotate: revoke the current token
-    rt.revoked = True
-
-    # Issue new pair
-    new_access = create_access_token(str(rt.user_id))
-    new_refresh = create_refresh_token(str(rt.user_id))
-    await _store_refresh_token(db, rt.user_id, new_refresh)
-
-    return TokenResponse(
-        access_token=new_access,
-        refresh_token=new_refresh,
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )
+    rt.revoked = True  # rotate: revoke the presented token
+    return await auth_service.issue_token_pair(db, rt.user_id)
 
 
 @router.post(
@@ -193,57 +199,10 @@ async def refresh(body: RefreshRequest, db: DbSession) -> TokenResponse:
 )
 async def logout(body: RefreshRequest, db: DbSession) -> None:
     """Mark the refresh token as revoked. Silent success if already revoked."""
-    token_hash = _hash_token(body.refresh_token)
+    token_hash = auth_service.hash_token(body.refresh_token)
     result = await db.execute(
         select(RefreshToken).where(RefreshToken.token_hash == token_hash)
     )
     rt: RefreshToken | None = result.scalar_one_or_none()
     if rt and not rt.revoked:
         rt.revoked = True
-
-
-@router.post(
-    "/device",
-    response_model=TokenResponse,
-    summary="Authenticate a paired device with hardware_uid + device_secret",
-)
-async def device_auth(body: DeviceAuthRequest, db: DbSession) -> TokenResponse:
-    """
-    Devices use this endpoint to obtain an access token for submitting telemetry.
-    The device must have completed the pairing handshake first.
-    """
-    result = await db.execute(
-        select(Device).where(Device.hardware_uid == body.hardware_uid)
-    )
-    device: Device | None = result.scalar_one_or_none()
-
-    if device is None or not device.is_paired:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Device not found or not yet paired.",
-        )
-
-    # Decrypt stored Fernet secret and do a constant-time string comparison
-    try:
-        stored_secret = decrypt_device_secret(device.device_secret_enc)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid device credentials.",
-        )
-
-    import hmac as _hmac
-    if not _hmac.compare_digest(stored_secret, body.device_secret):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid device credentials.",
-        )
-
-    # Scope: device tokens carry the device UUID, not a user UUID
-    access_token = create_access_token(f"device:{device.id}")
-
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token="",  # Devices do not use refresh tokens
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )

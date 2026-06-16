@@ -55,11 +55,11 @@ def _load_thresholds(device_id: str) -> dict[str, float]:
     import json
 
     import redis
-    from sqlalchemy import create_engine, select
-    from sqlalchemy.orm import Session
+    from sqlalchemy import select
 
     from app.core.config import get_settings
     from app.db.models.device_config import DeviceConfig
+    from app.workers.db import worker_session
 
     settings = get_settings()
     cache_key = f"alert_config:{device_id}"
@@ -74,13 +74,11 @@ def _load_thresholds(device_id: str) -> dict[str, float]:
     except Exception:
         logger.warning("Redis unavailable — skipping cache read", exc_info=True)
 
-    # ── 2. Load from DB ───────────────────────────────────────────────────────
+    # ── 2. Load from DB (shared worker engine) ────────────────────────────────
     thresholds = dict(ALERT_THRESHOLDS)  # start with globals as defaults
 
     try:
-        sync_url = settings.SYNC_DATABASE_URL
-        engine = create_engine(sync_url, pool_pre_ping=True)
-        with Session(engine) as session:
+        with worker_session() as session:
             result = session.execute(
                 select(DeviceConfig).where(
                     DeviceConfig.device_id == uuid.UUID(device_id)
@@ -105,7 +103,6 @@ def _load_thresholds(device_id: str) -> dict[str, float]:
                     "Device thresholds loaded from DB",
                     extra={"device_id": device_id},
                 )
-        engine.dispose()
     except Exception:
         logger.warning(
             "Could not load device config from DB — using globals",
@@ -132,37 +129,31 @@ def _persist_alerts(
     Write AlertEvent rows to the database for every breach.
     Runs synchronously inside the Celery worker.
     """
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-
-    from app.core.config import get_settings
     from app.db.models.alert_event import AlertEvent
+    from app.workers.db import worker_session
 
     if not alerts:
         return
 
-    settings = get_settings()
     try:
-        engine = create_engine(settings.SYNC_DATABASE_URL, pool_pre_ping=True)
-        with Session(engine) as session:
+        with worker_session() as session:
             for a in alerts:
-                event = AlertEvent(
-                    device_id=uuid.UUID(device_id),
-                    metric=a["metric"],
-                    severity=a["severity"],
-                    value=a["value"],
-                    threshold=a["threshold"],
-                    message=a["message"],
-                    reading_time=reading_time,
-                    notified=False,
+                session.add(
+                    AlertEvent(
+                        device_id=uuid.UUID(device_id),
+                        metric=a["metric"],
+                        severity=a["severity"],
+                        value=a["value"],
+                        threshold=a["threshold"],
+                        message=a["message"],
+                        reading_time=reading_time,
+                        notified=False,
+                    )
                 )
-                session.add(event)
-            session.commit()
             logger.info(
                 "Alert events persisted",
                 extra={"device_id": device_id, "count": len(alerts)},
             )
-        engine.dispose()
     except Exception:
         logger.error(
             "Failed to persist alert events",
@@ -304,58 +295,56 @@ def process_telemetry_alert_check(
         # Persist to alert_events table
         _persist_alerts(device_id, alerts, ts)
 
-        # Dispatch push notification for the device owner
-        from app.workers.tasks.notifications import send_push_notification
-        from sqlalchemy import create_engine, select
-        from sqlalchemy.orm import Session
-        from app.core.config import get_settings
-        from app.db.models.device import Device
+        # Dispatch push notifications to ALL members of the device (equal-access
+        # sharing model), not just a single owner.
+        from sqlalchemy import select
+
         from app.db.models.user import User
+        from app.db.models.user_device import UserDevice
+        from app.workers.db import worker_session
+        from app.workers.tasks.notifications import send_push_notification
 
-        settings = get_settings()
         try:
-            engine = create_engine(settings.SYNC_DATABASE_URL, pool_pre_ping=True)
-            with Session(engine) as session:
-                device = session.execute(
-                    select(Device).where(Device.id == uuid.UUID(device_id))
-                ).scalar_one_or_none()
+            with worker_session() as session:
+                member_tokens = session.execute(
+                    select(User.id, User.firebase_push_token)
+                    .join(UserDevice, UserDevice.user_id == User.id)
+                    .where(
+                        UserDevice.device_id == uuid.UUID(device_id),
+                        User.firebase_push_token.isnot(None),
+                    )
+                ).all()
 
-                if device:
-                    owner = session.execute(
-                        select(User).where(User.id == device.owner_id)
-                    ).scalar_one_or_none()
-
-                    if owner and owner.firebase_push_token:
-                        # One notification summarising all breaches
-                        titles = [a["message"][:60] for a in alerts]
-                        body = " | ".join(titles) if len(titles) > 1 else titles[0]
-                        severity = (
-                            "CRITICAL"
-                            if any(a["severity"] == "CRITICAL" for a in alerts)
-                            else "WARNING"
-                        )
-                        title = (
-                            "⚠️ Rawbin Alert"
-                            if severity == "WARNING"
-                            else "🚨 Rawbin Critical Alert"
-                        )
-                        send_push_notification.apply_async(
-                            kwargs={
-                                "user_id": str(owner.id),
-                                "fcm_token": owner.firebase_push_token,
-                                "title": title,
-                                "body": body,
-                                "data": {
-                                    "device_id": device_id,
-                                    "alert_count": str(len(alerts)),
-                                },
+            if member_tokens:
+                titles = [a["message"][:60] for a in alerts]
+                body = " | ".join(titles) if len(titles) > 1 else titles[0]
+                severity = (
+                    "CRITICAL"
+                    if any(a["severity"] == "CRITICAL" for a in alerts)
+                    else "WARNING"
+                )
+                title = (
+                    "⚠️ Rawbin Alert"
+                    if severity == "WARNING"
+                    else "🚨 Rawbin Critical Alert"
+                )
+                for member_id, token in member_tokens:
+                    send_push_notification.apply_async(
+                        kwargs={
+                            "user_id": str(member_id),
+                            "fcm_token": token,
+                            "title": title,
+                            "body": body,
+                            "data": {
+                                "device_id": device_id,
+                                "alert_count": str(len(alerts)),
                             },
-                            queue="default",
-                        )
-            engine.dispose()
+                        },
+                        queue="default",
+                    )
         except Exception:
             logger.warning(
-                "Could not dispatch push notification",
+                "Could not dispatch push notifications",
                 extra={"device_id": device_id},
                 exc_info=True,
             )

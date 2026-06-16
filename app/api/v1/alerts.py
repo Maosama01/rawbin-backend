@@ -10,34 +10,17 @@ Alert history routes — paginated log of threshold-breach events.
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Query
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, DbSession
 from app.db.models.alert_event import AlertEvent
-from app.db.models.device import Device
 from app.schemas.alert import AlertEventOut, AlertListResponse
+from app.services import device_access
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Alerts"])
-
-
-async def _assert_device_owner(
-    device_id: uuid.UUID,
-    db: AsyncSession,
-    current_user,
-) -> Device:
-    """Load device and assert ownership. Raises 404/403 as appropriate."""
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device: Device | None = result.scalar_one_or_none()
-
-    if device is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found.")
-    if device.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not device owner.")
-    return device
 
 
 @router.get(
@@ -68,7 +51,7 @@ async def list_alerts(
     - `severity` — `WARNING` or `CRITICAL`
     - `metric`   — exact metric name (e.g. `temperature_c`, `humidity_pct`, `co2_ppm`, `ph_level`)
     """
-    await _assert_device_owner(device_id, db, current_user)
+    await device_access.assert_device_member(db, device_id, current_user.id)
 
     # ── Build query ───────────────────────────────────────────────────────────
     base_where = [AlertEvent.device_id == device_id]

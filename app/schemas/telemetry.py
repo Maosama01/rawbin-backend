@@ -19,16 +19,18 @@ from pydantic import BaseModel, Field
 
 class SensorReadingIn(BaseModel):
     """
-    A single sensor snapshot from the device.
+    A single sensor snapshot published by a device over MQTT.
 
-    `time` defaults to the server's receive time when omitted.
-    The device MAY include its own timestamp if it has an RTC, but the
-    server truncates to millisecond precision to avoid hypertable fragmentation.
+    `time` is REQUIRED: the device (or its BLE gateway) must stamp every reading
+    with the moment it was captured. The server no longer invents timestamps —
+    that previously caused primary-key collisions on the (time, device_id)
+    hypertable and produced misleading "received-at" times. A payload without
+    `time` is rejected as invalid.
     """
 
-    time: Optional[datetime] = Field(
-        default=None,
-        description="UTC timestamp of the reading. Defaults to server receive time.",
+    time: datetime = Field(
+        ...,
+        description="UTC timestamp of the reading (required; set by the device).",
     )
 
     # ── Sensor measurements — all optional ────────────────────────────────────
@@ -95,16 +97,6 @@ class SensorReadingIn(BaseModel):
     )
 
 
-class BatchSensorReadingIn(BaseModel):
-    """Batch of up to 500 readings (device may buffer while offline over BLE)."""
-
-    readings: list[SensorReadingIn] = Field(
-        ...,
-        min_length=1,
-        max_length=500,
-    )
-
-
 # ── Outbound: what the API returns ────────────────────────────────────────────
 
 class SensorReadingOut(BaseModel):
@@ -138,13 +130,6 @@ class DeviceSnapshotResponse(BaseModel):
         default=None,
         description="Seconds since the most recent reading was received.",
     )
-
-
-class TelemetryAcceptedResponse(BaseModel):
-    """Returned immediately after readings are accepted for processing."""
-
-    accepted: int = Field(description="Number of readings accepted.")
-    device_id: uuid.UUID
 
 
 # ── History response ──────────────────────────────────────────────────────────

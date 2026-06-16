@@ -12,7 +12,7 @@ The pairing flow:
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 # ── Pairing: Challenge ────────────────────────────────────────────────────────
@@ -93,6 +93,28 @@ class DeviceResponse(BaseModel):
     is_paired: bool
     firmware_version: str | None
     created_at: datetime
+
+
+# ── Sharing (equal-access membership) ─────────────────────────────────────────
+
+class DeviceShareRequest(BaseModel):
+    """Body for POST /api/v1/devices/{device_id}/share — add another member."""
+
+    email: EmailStr = Field(
+        ...,
+        description="Email of an existing user to grant equal access to this device.",
+        examples=["bob@example.com"],
+    )
+
+
+class DeviceMemberOut(BaseModel):
+    """One member of a device (equal-access sharing model)."""
+
+    model_config = {"from_attributes": True}
+
+    user_id: uuid.UUID
+    email: EmailStr
+    display_name: str
 
 
 # ── Device Config (per-device alert thresholds) ───────────────────────────────

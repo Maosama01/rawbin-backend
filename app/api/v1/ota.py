@@ -12,13 +12,12 @@ from typing import Optional
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, DbSession
 from app.core.config import get_settings
-from app.db.models.device import Device
 from app.schemas.ota import OtaUpdateCheckResponse
+from app.services import device_access
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -78,12 +77,8 @@ async def check_ota_update(
     this endpoint generates an S3 presigned URL that the mobile app can use to download the
     new binary. The URL expires after 15 minutes.
     """
-    # Verify ownership
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device: Device | None = result.scalar_one_or_none()
-
-    if device is None or device.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found.")
+    # Verify the caller is a member of the device.
+    device = await device_access.assert_device_member(db, device_id, current_user.id)
 
     current_version = device.firmware_version
 

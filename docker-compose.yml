@@ -95,6 +95,25 @@ services:
       redis:
         condition: service_healthy
 
+  # ─── MQTT Ingestion Worker (standalone telemetry subscriber) ───────────────
+  mqtt_worker:
+    build:
+      context: .
+      target: runtime
+    container_name: rawbin_mqtt_worker
+    restart: unless-stopped
+    <<: *app-env
+    command: python -m app.workers.mqtt_listener
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
   # ─── Flower (Celery monitoring UI) ─────────────────────────────────────────
   flower:
     build:

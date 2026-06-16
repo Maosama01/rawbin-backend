@@ -9,8 +9,12 @@ serialised back to the client (no internal fields like password_hash leak out).
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
+
+# E.164 phone number: a leading '+' then 1–15 digits.
+_E164_PATTERN = r"^\+[1-9]\d{1,14}$"
 
 
 # ── Request Models ────────────────────────────────────────────────────────────
@@ -32,11 +36,41 @@ class UserRegisterRequest(BaseModel):
         max_length=100,
         examples=["Alice"],
     )
+    phone: Optional[str] = Field(
+        default=None,
+        pattern=_E164_PATTERN,
+        description="E.164 phone number for SMS-OTP login (optional).",
+        examples=["+14155552671"],
+    )
 
     @field_validator("email", mode="before")
     @classmethod
     def normalise_email(cls, v: str) -> str:
         return v.strip().lower()
+
+
+class OTPRequestIn(BaseModel):
+    """Body for POST /api/v1/auth/otp/request — ask for a login code by SMS."""
+
+    phone: str = Field(
+        ...,
+        pattern=_E164_PATTERN,
+        description="E.164 phone number registered on the account.",
+        examples=["+14155552671"],
+    )
+
+
+class OTPVerifyIn(BaseModel):
+    """Body for POST /api/v1/auth/otp/verify — exchange a code for tokens."""
+
+    phone: str = Field(..., pattern=_E164_PATTERN, examples=["+14155552671"])
+    code: str = Field(
+        ...,
+        min_length=4,
+        max_length=10,
+        description="The numeric code delivered by SMS.",
+        examples=["123456"],
+    )
 
 
 class UserLoginRequest(BaseModel):
@@ -60,20 +94,6 @@ class RefreshRequest(BaseModel):
     )
 
 
-class DeviceAuthRequest(BaseModel):
-    """
-    Body for POST /api/v1/auth/device
-    Devices exchange their hardware_uid + device_secret for a short-lived
-    access token used to authenticate telemetry pushes.
-    """
-
-    hardware_uid: str = Field(..., max_length=128)
-    device_secret: str = Field(
-        ...,
-        description="Factory-provisioned shared secret; compared against stored hash.",
-    )
-
-
 # ── Response Models ───────────────────────────────────────────────────────────
 
 class UserResponse(BaseModel):
@@ -83,6 +103,7 @@ class UserResponse(BaseModel):
 
     id: uuid.UUID
     email: EmailStr
+    phone: Optional[str] = None
     display_name: str
     is_active: bool
     created_at: datetime
