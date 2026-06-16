@@ -92,8 +92,10 @@ docker compose exec api alembic upgrade head
 - API docs (DEBUG only): http://localhost:8000/docs
 - Flower: http://localhost:5555
 
-SMS defaults to `SMS_PROVIDER=stub` — OTP codes are printed to the
-`mqtt_worker`/`api` logs so you can log in without a Twilio account.
+SMS defaults to `SMS_PROVIDER=stub`. When the backend runs in development mode (`APP_ENV=development`), any OTP requested will securely default to `123456`, bypassing the need to check Docker logs.
+
+### Demo Devices
+The backend provides a `POST /api/v1/devices/demo` endpoint which creates a mock STM32 device assigned to your account, pre-populated with 24 hours of realistic telemetry data (temperature, humidity, CO2, pH). This is extremely useful for frontend visualization testing.
 
 ## Tests
 
