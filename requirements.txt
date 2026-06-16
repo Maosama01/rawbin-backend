@@ -16,7 +16,7 @@ email-validator==2.3.0   # required by Pydantic EmailStr (used in auth/user sche
 # ── Auth & Security ───────────────────────────────────────────────────────────
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
-bcrypt==5.0.0
+bcrypt==3.2.2
 
 # ── Cache / Messaging ─────────────────────────────────────────────────────────
 redis[hiredis]==8.0.0
