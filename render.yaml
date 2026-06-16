@@ -1,0 +1,149 @@
+services:
+  # ─── Redis ──────────────────────────────────────────────────────────────────
+  - type: redis
+    name: rawbin-redis
+    plan: free
+    ipAllowList: []
+
+  # ─── TimescaleDB (PostgreSQL) ──────────────────────────────────────────────
+  # We use a Private Service because Render's managed Postgres doesn't
+  # support the TimescaleDB extension natively.
+  - type: pserv
+    name: rawbin-db
+    env: image
+    plan: starter
+    image:
+      url: timescale/timescaledb:latest-pg16
+    disk:
+      name: pg-data
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 1
+    envVars:
+      - key: POSTGRES_USER
+        value: rawbin
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+      - key: POSTGRES_DB
+        value: rawbin
+
+  # ─── FastAPI Application ────────────────────────────────────────────────────
+  - type: web
+    name: rawbin-api
+    env: docker
+    plan: free
+    region: ohio
+    dockerCommand: >
+      uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEVICE_SECRET_KEY
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: "*" # Update this to your Vercel URL later!
+      
+      # Database Connection
+      - key: POSTGRES_USER
+        value: rawbin
+      - key: POSTGRES_PASSWORD
+        fromService:
+          type: pserv
+          name: rawbin-db
+          envVarKey: POSTGRES_PASSWORD
+      - key: POSTGRES_HOST
+        value: rawbin-db
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_DB
+        value: rawbin
+      
+      # Redis Connection
+      - key: REDIS_HOST
+        value: rawbin-redis
+      - key: REDIS_PORT
+        value: "6379"
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: rawbin-redis
+          property: connectionString
+
+      # MQTT Broker (Use a free HiveMQ or EMQX public broker for testing)
+      - key: MQTT_BROKER_HOST
+        value: broker.hivemq.com
+      - key: MQTT_BROKER_PORT
+        value: "1883"
+
+  # ─── Celery Worker ──────────────────────────────────────────────────────────
+  - type: worker
+    name: rawbin-worker
+    env: docker
+    plan: starter
+    dockerCommand: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: POSTGRES_USER
+        value: rawbin
+      - key: POSTGRES_PASSWORD
+        fromService:
+          type: pserv
+          name: rawbin-db
+          envVarKey: POSTGRES_PASSWORD
+      - key: POSTGRES_HOST
+        value: rawbin-db
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_DB
+        value: rawbin
+      - key: REDIS_HOST
+        value: rawbin-redis
+      - key: REDIS_PORT
+        value: "6379"
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: rawbin-redis
+          property: connectionString
+      - key: MQTT_BROKER_HOST
+        value: broker.hivemq.com
+      - key: MQTT_BROKER_PORT
+        value: "1883"
+
+  # ─── MQTT Ingestion Worker ──────────────────────────────────────────────────
+  - type: worker
+    name: rawbin-mqtt-worker
+    env: docker
+    plan: starter
+    dockerCommand: python -m app.workers.mqtt_listener
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: POSTGRES_USER
+        value: rawbin
+      - key: POSTGRES_PASSWORD
+        fromService:
+          type: pserv
+          name: rawbin-db
+          envVarKey: POSTGRES_PASSWORD
+      - key: POSTGRES_HOST
+        value: rawbin-db
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_DB
+        value: rawbin
+      - key: REDIS_HOST
+        value: rawbin-redis
+      - key: REDIS_PORT
+        value: "6379"
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: rawbin-redis
+          property: connectionString
+      - key: MQTT_BROKER_HOST
+        value: broker.hivemq.com
+      - key: MQTT_BROKER_PORT
+        value: "1883"
