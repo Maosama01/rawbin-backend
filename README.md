@@ -97,6 +97,18 @@ SMS defaults to `SMS_PROVIDER=stub`. When the backend runs in development mode (
 ### Demo Devices
 The backend provides a `POST /api/v1/devices/demo` endpoint which creates a mock STM32 device assigned to your account, pre-populated with 24 hours of realistic telemetry data (temperature, humidity, CO2, pH). This is extremely useful for frontend visualization testing.
 
+## Cloud Deployment (VPS)
+
+We provide an automated 1-click deployment script designed for free-tier Linux VPS instances (like Oracle Cloud Ampere A1 or Google Cloud e2-micro).
+
+1. Provision a Linux VPS (Ubuntu 22.04+ recommended)
+2. Open ports `8000` (API) and `1883` (MQTT) in the cloud firewall
+3. SSH into your VPS and run:
+   ```bash
+   curl -sSL https://raw.githubusercontent.com/Maosama01/rawbin-backend/master/deploy.sh | bash
+   ```
+This script will install Docker, configure UFW, clone the repository, generate secure passwords/keys in a fresh `.env` file, and start all services via Docker Compose in detached mode.
+
 ## Tests
 
 Integration tests run against the live Docker stack (Postgres + Redis):
